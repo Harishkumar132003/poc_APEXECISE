@@ -1,0 +1,91 @@
+# ----------------------
+# Python
+# ----------------------
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pdb
+*.pkl
+*.log
+
+# Compiled / distribution files
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Virtual environments
+env/
+venv/
+ENV/
+.venv/
+.idea/
+
+# Bytecode + cache
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+*.so
+.pytest_cache/
+.cache/
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+
+# VS Code
+.vscode/
+.history/
+
+# PyCharm
+.idea/
+
+# Environment files (optional)
+.env
+.env.*
+*.env
+
+# Local config / secrets
+config.json
+*.db
+
+# Flask specific
+instance/
+*.db
+*.sqlite3
+
+# Logs
+logs/
+*.log
+
+# MacOS
+.DS_Store
+
+# Windows
+Thumbs.db
+
+# Generated files
+*.csv
+*.xlsx
+*.pdf
+*.tmp
+*.bak
+
+# Coverage / testing
+.coverage
+htmlcov/
+tests/__pycache__/
+
+# MyPy / type checker
+.mypy_cache/
+.dmypy.json
+
+# Pylint
+pylint-report.txt
+pylint-output.txt
+
+# Editors / OS
+*.swp
+*.swo
+*~
