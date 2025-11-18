@@ -1,0 +1,10 @@
+# --- Flask Backend ---
+flask==3.0.0
+python-dotenv==1.0.1
+langchain-community
+langchain-text-splitters
+langchain-openai
+qdrant-client
+PyPDF2
+python-dotenv
+tqdm

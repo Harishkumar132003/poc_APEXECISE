@@ -1,0 +1,77 @@
+services:
+  db:
+    image: mysql:8
+    container_name: mysql_poc
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: PassWord123
+      MYSQL_DATABASE: poc
+    ports:
+      - "3306:3306"
+    volumes:
+      - db_data:/var/lib/mysql
+      - ./mysql:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-pPassWord123"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant_vector_db
+    restart: always
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD", "true"]
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend.Dockerfile
+    container_name: flask_backend
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DB_HOST: db
+      DB_USER: root
+      DB_PASSWORD: PassWord123
+      DB_NAME: poc
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./src:/app/src
+
+  userquery:
+    build:
+      context: .
+      dockerfile: userbackend.Dockerfile
+    container_name: flask_userquery
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    environment:
+      DB_HOST: db
+      DB_USER: root
+      DB_PASSWORD: PassWord123
+      DB_NAME: poc
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_API_KEY: ""
+    ports:
+      - "5005:5005"
+    volumes:
+      - ./userbackend:/app/userbackend
+      - ./uploads:/app/uploads
+
+volumes:
+  db_data:
+  qdrant_data:
