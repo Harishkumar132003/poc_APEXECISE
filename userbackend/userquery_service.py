@@ -5,12 +5,16 @@ from rag_utils import (
 )
 import os
 from dotenv import load_dotenv
+from flask_cors import CORS
+
 
 
 load_dotenv()
 
 
 app = Flask(__name__)
+CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
+
 UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 

@@ -5,8 +5,11 @@ from langchain_openai import ChatOpenAI
 from langchain_community.utilities import SQLDatabase
 import os
 from sqlalchemy import create_engine, text
+from flask_cors import CORS
 
 load_dotenv()
+app = Flask(__name__)
+CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 
 
 raw_engine = create_engine(
@@ -146,7 +149,7 @@ Rules:
 # =====================================================================
 
 llm_sql = ChatOpenAI(model="gpt-4.1", temperature=0)
-llm_answer = ChatOpenAI(model="gpt-4o", temperature=0)
+llm_answer = ChatOpenAI(model="gpt-4.1-mini", temperature=0)
 
 
 
@@ -229,7 +232,6 @@ def process_query(user_query, usercode, role, chat_history):
 # 8. FLASK API
 # =====================================================================
 
-app = Flask(__name__)
 
 chat_history = [
     AIMessage(content="Hello! I'm your SQL assistant. Ask me anything.")
