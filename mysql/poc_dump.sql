@@ -27,6 +27,7 @@ CREATE TABLE `chat_history` (
   `usercode` varchar(100) DEFAULT NULL,
   `role` varchar(20) DEFAULT NULL,
   `message` text,
+  `audio` longblob NULL,
   `response` text,
   `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`)

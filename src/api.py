@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify,send_file
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_openai import ChatOpenAI
@@ -6,10 +6,17 @@ from langchain_community.utilities import SQLDatabase
 import os
 from sqlalchemy import create_engine, text
 from flask_cors import CORS
+from openai import OpenAI
+import tempfile
+import base64
+
+
 
 load_dotenv()
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
+client = OpenAI()
+
 
 
 raw_engine = create_engine(
@@ -17,32 +24,56 @@ raw_engine = create_engine(
     pool_pre_ping=True
 )
 
-def save_chat(usercode, role, message, response=None):
+def save_chat(usercode, role, message=None, response=None, audio_blob=None):
     try:
         query = text("""
-            INSERT INTO chat_history (usercode, role, message, response)
-            VALUES (:usercode, :role, :message, :response)
+            INSERT INTO chat_history (usercode, role, message, audio, response)
+            VALUES (:usercode, :role, :message, :audio, :response)
         """)
         with raw_engine.begin() as conn:
             conn.execute(query, {
                 "usercode": usercode,
                 "role": role,
                 "message": message,
+                "audio": audio_blob,
                 "response": response
             })
     except Exception as e:
         print("Chat save error:", e)
 
+
 def get_chat_by_usercode(usercode):
     query = text("""
-        SELECT role, message, response, created_at
+        SELECT role, message, audio, response, created_at
         FROM chat_history
         WHERE usercode = :usercode
         ORDER BY id ASC
     """)
+
     with raw_engine.begin() as conn:
-        rows = conn.execute(query, {"usercode": usercode}).fetchall()
-    return [dict(r._mapping) for r in rows]
+        rows = conn.execute(query, {"usercode": usercode}).mappings().all()
+
+
+    result = []
+    for r in rows:
+        audio_base64=(
+        f"data:audio/webm;base64,{base64.b64encode(r['audio']).decode()}"
+        if r["audio"] else None
+    )
+        
+        result.append({
+            "role": r["role"],
+            "message": r["message"],
+            "response": r["response"],
+            "created_at": r["created_at"].isoformat(),
+
+            # 🔥 VERY IMPORTANT
+            "audio": audio_base64
+        })
+
+    return result
+
+
 
 
 
@@ -273,6 +304,91 @@ def analyze_history(usercode):
         "usercode": usercode,
         "history": results
     })
+
+@app.post("/voice")
+def voice_input():
+    try:
+        audio_file = request.files.get("audio")
+        usercode = request.form.get("usercode", "")
+        role = request.form.get("role", "").lower().strip()
+
+        if not audio_file:
+            return jsonify({"error": "Audio file is required"}), 400
+
+        # Raw bytes for DB
+        audio_bytes = audio_file.read()
+
+        # Reset pointer so Whisper can read again
+        audio_file.stream.seek(0)
+
+        # Save temp file
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as temp:
+            audio_file.save(temp.name)
+            audio_path = temp.name
+
+        # Transcription
+        with open(audio_path, "rb") as f:
+            transcript = client.audio.transcriptions.create(
+                model="gpt-4o-transcribe",
+                file=f,
+                language="en"
+            )
+
+        transcribed_text = transcript.text.strip()
+
+        # AI reply
+        reply = process_query(transcribed_text, usercode, role, chat_history)
+
+        # Save to DB (text + audio)
+        save_chat(
+            usercode=usercode,
+            role="assistant",
+            message=transcribed_text,
+            response=reply,
+            audio_blob=audio_bytes
+        )
+
+        return jsonify({
+            "voice_text": transcribed_text,
+            "response": reply,
+            # "audio": f"data:audio/webm;base64,{base64.b64encode(audio_bytes).decode()}"
+        })
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.post("/tts")
+def tts():
+    try:
+        data = request.get_json(silent=True) or {}
+        text = data.get("text")
+
+        if not text:
+            return jsonify({"error": "text is required"}), 400
+
+        # Generate speech using OpenAI TTS
+        response = client.audio.speech.create(
+            model="gpt-4o-mini-tts",
+            voice="alloy",
+            input=text
+        )
+
+        # Read audio bytes
+        audio_bytes = response.read()
+
+        # Convert to base64
+        audio_base64 = base64.b64encode(audio_bytes).decode("utf-8")
+        audio_data_url = f"data:audio/mp3;base64,{audio_base64}"
+
+        # Send base64 as JSON
+        return jsonify({
+            "audio": audio_data_url,
+            "format": "mp3",
+            "message": "success"
+        })
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 

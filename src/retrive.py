@@ -1,126 +1,329 @@
 from flask import Flask, request, jsonify
-from openai import OpenAI
 from dotenv import load_dotenv
-import tempfile
+from langchain_core.messages import AIMessage, HumanMessage
+from langchain_openai import ChatOpenAI
+from langchain_community.utilities import SQLDatabase
 import os
+from sqlalchemy import create_engine, text
+from flask_cors import CORS
+from faster_whisper import WhisperModel
+import tempfile
 
 load_dotenv()
-
 app = Flask(__name__)
-client = OpenAI()
-
-# ===========================
-# 🔥 HARDCODE THESE VALUES
-# ===========================
-VECTOR_STORE_ID = "vs_6915c487e8ac81919702f97efc7284e7"
-ASSISTANT_ID    = "asst_z8QTN82CqFMX1RXqKMaEOdph"
+CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
+whisper_model = WhisperModel("base.en", device="cpu", compute_type="int8")
 
 
-# ==========================================
-# 1. UPLOAD CSV → Upload file to vector store
-# ==========================================
-@app.route("/upload_csv", methods=["POST"])
-def upload_csv():
-    if "file" not in request.files:
-        return jsonify({"error": "CSV file missing"}), 400
+raw_engine = create_engine(
+    f"mysql+mysqlconnector://{os.getenv('DB_USER')}:{os.getenv('DB_PASSWORD')}@{os.getenv('DB_HOST')}:3306/{os.getenv('DB_NAME')}",
+    pool_pre_ping=True
+)
 
-    file_storage = request.files["file"]
+def save_chat(usercode, role, message, response=None):
+    try:
+        query = text("""
+            INSERT INTO chat_history (usercode, role, message, response)
+            VALUES (:usercode, :role, :message, :response)
+        """)
+        with raw_engine.begin() as conn:
+            conn.execute(query, {
+                "usercode": usercode,
+                "role": role,
+                "message": message,
+                "response": response
+            })
+    except Exception as e:
+        print("Chat save error:", e)
 
-    temp = tempfile.NamedTemporaryFile(delete=False)
-    file_storage.save(temp.name)
-    real_file = open(temp.name, "rb")
+def get_chat_by_usercode(usercode):
+    query = text("""
+        SELECT role, message, response, created_at
+        FROM chat_history
+        WHERE usercode = :usercode
+        ORDER BY id ASC
+    """)
+    with raw_engine.begin() as conn:
+        rows = conn.execute(query, {"usercode": usercode}).fetchall()
+    return [dict(r._mapping) for r in rows]
 
-    # Upload file into correct vector store
-    client.vector_stores.files.upload_and_poll(
-        vector_store_id=VECTOR_STORE_ID,
-        file=real_file
+
+
+
+def init_database():
+    db_uri = f"mysql+mysqlconnector://{os.getenv('DB_USER')}:{os.getenv('DB_PASSWORD')}@{os.getenv('DB_HOST')}:3306/{os.getenv('DB_NAME')}"
+
+
+    engine_args = {
+        "pool_pre_ping": True,
+        "pool_size": 20,
+        "max_overflow": 40
+    }
+
+    return SQLDatabase.from_uri(db_uri, engine_args=engine_args)
+
+db = init_database()
+
+# Cache schema
+SCHEMA = db.get_table_info()
+
+#print("Database schema cached.",SCHEMA)
+
+
+SYSTEM_SQL_ANALYST = f"""
+You are an expert MySQL analyst.
+You know the following database schema:
+
+<SCHEMA>
+{SCHEMA}
+</SCHEMA>
+
+BUSINESS FLOW:
+distillery → wholesale (DEPO) → retail → customer
+
+IMPORTANT LOGIC (STRICT):
+
+ROLE RULES (OVERRIDES EVERYTHING):
+- Role = "depot":
+      • You MUST use ONLY poc_wholesale and poc_stock_closing
+      • NEVER use poc_distillery
+      • NEVER use poc_retail
+
+- Role = "distillery":
+      • You MUST use ONLY poc_distillery and poc_stock_closing
+      • NEVER use poc_wholesale
+      • NEVER use poc_retail
+
+USER TYPES:
+   A. Depot user (USERCODE starts with 'DEPO'):
+        - Use depot logic ONLY IF role is not provided.
+        - Depot outgoing dispatch → poc_wholesale.from_entity_code = '<USERCODE>'
+        - Closing stock → poc_stock_closing.entity_code = '<USERCODE>'
+
+   B. Distillery user (USERCODE does NOT start with 'DEPO'):
+        - Use distillery logic ONLY IF role is not provided.
+        - Distillery outgoing dispatch → poc_distillery.from_entity_code = '<USERCODE>'
+        - Closing stock → poc_stock_closing.entity_code = '<USERCODE>'
+
+FOR DEPOT USERS (USERCODE starts with 'DEPO'):
+   ALWAYS use:
+       FROM poc_wholesale
+       WHERE from_entity_code = '<USERCODE>'
+
+   Do NOT use poc_distillery.
+   Do NOT use poc_retail.
+   Do NOT use any other table for dispatch.
+   ALWAYS answer from depot perspective using poc_wholesale only.
+
+FOR DISTILLERY USERS (USERCODE does NOT start with 'DEPO'):
+   ALWAYS use:
+         FROM poc_distillery
+         WHERE from_entity_code = '<USERCODE>'
+  
+     Do NOT use poc_wholesale.
+     Do NOT use poc_retail.
+     Do NOT use any other table for dispatch.
+     ALWAYS answer from depot perspective using poc_wholesale only.
+  
+SQL RULES:
+- Output ONLY raw SQL.
+- No markdown.
+- No explanation.
+- Use exact column names.
+- Role = '<ROLE>'.
+"""
+
+
+
+
+SYSTEM_DATA_ANALYST = """
+You are a senior data analyst.
+Rules:
+- Interpret the SQL result into a short, clear answer.
+- If SQLResult contains NOT_ALLOWED, respond:
+  "You do not have permission to access this information."
+- Never mention SQL.
+- Never mention schema.
+"""
+
+
+# =====================================================================
+# 3. LLM CLIENTS
+# =====================================================================
+
+llm_sql = ChatOpenAI(model="gpt-4.1", temperature=0)
+llm_answer = ChatOpenAI(model="gpt-4.1-mini", temperature=0)
+
+
+
+# =====================================================================
+# 4. SQL CLEANER
+# =====================================================================
+
+def clean_sql(q):
+    return q.replace("```sql", "").replace("```", "").strip()
+
+
+# =====================================================================
+# 5. SQL GENERATION
+# =====================================================================
+
+def generate_sql(user_question: str, usercode: str,role: str):
+    system_prompt = SYSTEM_SQL_ANALYST \
+        .replace("<USERCODE>", usercode) \
+        .replace("<ROLE>", role)
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_question},
+    ]
+
+    sql = llm_sql.invoke(messages).content
+    return clean_sql(sql)
+
+
+# =====================================================================
+# 6. FINAL ANSWER GENERATION
+# =====================================================================
+
+def generate_final_answer(question, sql_query, sql_results, chat_history):
+
+    # Handle permission block
+    if isinstance(sql_results, list) and len(sql_results) > 0:
+        row = sql_results[0]
+        if isinstance(row, dict) and row.get("message") == "NOT_ALLOWED":
+            return "You do not have permission to access this information."
+
+    print("SQL Results:", sql_query)
+    messages = [
+        {"role": "system", "content": SYSTEM_DATA_ANALYST},
+        *chat_history,
+        {
+            "role": "user",
+            "content": f"""
+User Question: {question}
+SQL Query: {sql_query}
+SQL Result: {sql_results}
+"""
+        },
+    ]
+
+    return llm_answer.invoke(messages).content
+
+
+# =====================================================================
+# 7. MAIN PIPELINE
+# =====================================================================
+
+def process_query(user_query, usercode, role, chat_history):
+
+    sql = generate_sql(user_query, usercode, role)
+
+    try:
+        sql_result = db.run(sql)
+    except Exception as e:
+        return f"SQL Error: {e}\nGenerated SQL: {sql}"
+
+    history_slice = chat_history[-2:]
+
+    return generate_final_answer(
+        user_query, sql, sql_result, history_slice
     )
 
-    real_file.close()
+
+# =====================================================================
+# 8. FLASK API
+# =====================================================================
+
+
+chat_history = [
+    AIMessage(content="Hello! I'm your SQL assistant. Ask me anything.")
+]
+
+@app.post("/analyze")
+def analyze():
+    data = request.json
+
+    user_query = data.get("query")
+    usercode = data.get("usercode", "")
+    role = data.get("role", "").lower().strip() 
+
+    if not user_query:
+        return jsonify({"error": "query field is required"}), 400
+
+    chat_history.append(HumanMessage(content=user_query))
+
+    try:
+        response = process_query(user_query, usercode, role, chat_history)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    chat_history.append(AIMessage(content=response))
+    save_chat(usercode, "assistant", message=user_query, response=response)
 
     return jsonify({
-        "message": "CSV uploaded & embedded successfully",
-        "vector_store_id": VECTOR_STORE_ID
+        "query": user_query,
+        "usercode": usercode,
+        "response": response
     })
 
 
-# ==========================================
-# 2. CREATE ASSISTANT LINKED TO VECTOR STORE
-# ==========================================
-@app.route("/create_assistant", methods=["POST"])
-def create_assistant():
 
-    assistant = client.beta.assistants.create(
-        name="CSV Query Bot",
-        model="gpt-4.1-mini",
-        tools=[{"type": "file_search"}],
-        tool_resources={
-            "file_search": {"vector_store_ids": [VECTOR_STORE_ID]}
-        }
-    )
-
+@app.get("/analyze/history/<usercode>")
+def analyze_history(usercode):
+    results = get_chat_by_usercode(usercode)
     return jsonify({
-        "message": "Assistant created successfully",
-        "assistant_id": assistant.id
+        "usercode": usercode,
+        "history": results
     })
 
+@app.post("/voice")
+def voice_input():
+    try:
+        # 1. Receive audio file
+        audio_file = request.files.get("audio")
+        usercode = request.form.get("usercode", "")
+        role = request.form.get("role", "").lower().strip()
 
-# ==========================================
-# 3. ASK QUESTION
-# ==========================================
+        if not audio_file:
+            return jsonify({"error": "Audio file is required"}), 400
 
-def format_results(results):
-    formatted_results = ''
-    for result in results.data:
-        formatted_result = f"<result file_id='{result.file_id}' file_name='{result.file_name}'>"
-        for part in result.content:
-            formatted_result += f"<content>{part.text}</content>"
-        formatted_results += formatted_result + "</result>"
-    return f"<sources>{formatted_results}</sources>"
+        # 2. Save to temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as temp:
+            audio_file.save(temp.name)
+            audio_path = temp.name
 
-@app.route("/ask", methods=["POST"])
-def ask_question():
-    data = request.get_json()
-    query = data.get("question")
+        # 3. Transcribe using Whisper
+        segments, info = whisper_model.transcribe(audio_path)
+        transcribed_text = "".join([seg.text for seg in segments]).strip()
 
-    # 1️⃣ Vector search
-    results = client.vector_stores.search(
-        vector_store_id=VECTOR_STORE_ID,
-        query=query
-    )
+        if not transcribed_text:
+            return jsonify({"error": "Could not transcribe audio"}), 400
 
-    # 2️⃣ Extract text chunks from results
-    chunks = []
-    for r in results.data:
-        if r.content:
-            chunks.append(r.content)
+        # 4. Use existing chatbot pipeline
+        chat_history.append(HumanMessage(content=transcribed_text))
+        reply = process_query(transcribed_text, usercode, role, chat_history)
+        chat_history.append(AIMessage(content=reply))
 
-    context_text = "\n\n".join(chunks)
+        # 5. Save into DB
+        save_chat(usercode, "assistant", message=transcribed_text, response=reply)
 
-    # 3️⃣ LLM Completion (RAG)
-    completion = client.chat.completions.create(
-        model="gpt-4.1",
-        messages=[
-            {
-                "role": "developer",
-                "content": "Answer the question concisely using ONLY the provided context. If the answer is not in the context, say 'Not found in data.'"
-            },
-            {
-                "role": "user",
-                "content": f"Context:\n{context_text}\n\nQuestion: {query}"
-            }
-        ]
-    )
+        return jsonify({
+            "voice_text": transcribed_text,
+            "response": reply
+        })
 
-    answer = completion.choices[0].message.content
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
-    return jsonify({
-        "question": query,
-        "answer": answer,
-        "chunks_used": chunks
-    })
 
+
+
+
+@app.get("/")
+def home():
+    return {"message": "Fast SQL Chat API (Depot Optional) is running"}
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(host="0.0.0.0", port=5000, debug=False)
