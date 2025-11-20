@@ -26,7 +26,7 @@ init_qdrant()
 # ---------------------------------------------------
 # 👉 1. Upload PDF → create embeddings
 # ---------------------------------------------------
-@app.post("/upload_pdf")
+@app.post("/chat/upload_pdf")
 def upload_pdf():
     if "pdf" not in request.files:
         return jsonify({"error": "PDF file is required"}), 400
@@ -44,7 +44,7 @@ def upload_pdf():
     return jsonify({"message": "PDF processed and embeddings stored."})
 
 
-@app.post("/userquery")
+@app.post("/chat/userquery")
 def userquery():
     data = request.json
     question = data.get("query", "").strip()

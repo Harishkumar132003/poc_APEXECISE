@@ -34,8 +34,7 @@ node_modules/
 
 # Don’t include data if not needed
 # (Optional: comment out if you need these inside container)
-data/raw/
-data/temp/
+
 
 # IDE folders
 .vscode/

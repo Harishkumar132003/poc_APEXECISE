@@ -5,6 +5,8 @@ services:
       - "80:80"
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      - wizzgeeks-network
     restart: unless-stopped
 
   db:
@@ -19,6 +21,8 @@ services:
     volumes:
       - db_data:/var/lib/mysql
       - ./mysql:/docker-entrypoint-initdb.d
+    networks:
+      - wizzgeeks-network
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-pPassWord123"]
       interval: 5s
@@ -36,6 +40,8 @@ services:
       - qdrant_data:/qdrant/storage
     healthcheck:
       test: ["CMD", "true"]
+    networks:
+      - wizzgeeks-network
 
   backend:
     build:
@@ -52,9 +58,11 @@ services:
       DB_PASSWORD: PassWord123
       DB_NAME: poc
     ports:
-      - "5000:5000"
+      - "5002:5002"
     volumes:
-      - ./src:/app/src
+      - ./src:/app/src  
+    networks:
+      - wizzgeeks-network
 
   userquery:
     build:
@@ -79,7 +87,8 @@ services:
     volumes:
       - ./userbackend:/app/userbackend
       - ./uploads:/app/uploads
-    
+    networks:
+      - wizzgeeks-network
   prophet:
     build:
       context: .
@@ -88,7 +97,11 @@ services:
     restart: always
     ports:
       - "5001:5001"
-
+    networks:
+      - wizzgeeks-network
 volumes:
   db_data:
   qdrant_data:
+
+networks:
+  wizzgeeks-network:

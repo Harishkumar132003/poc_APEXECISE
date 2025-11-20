@@ -32,7 +32,7 @@ retail['bill_date'] = pd.to_datetime(retail['bill_date'], errors='coerce')
 retail['ProductCategory'] = retail['brand_name'] + " | " + retail['package_size']
 
 
-@app.route("/depot/predict", methods=["POST"])
+@app.route("/prophet/depot/predict", methods=["POST"])
 def predict():
     req = request.json
     months = req.get("month", 2)
@@ -150,7 +150,7 @@ def predict():
 
     return jsonify(results)
 
-@app.route("/distillery/predict", methods=["POST"])
+@app.route("/prophet/distillery/predict", methods=["POST"])
 def predict_distillery():
     req = request.json
     months = req.get("month", 2)
@@ -307,7 +307,7 @@ def predict_distillery():
     return jsonify(results)
 
 
-@app.route("/intent", methods=["POST"])
+@app.route("/prophet/intent", methods=["POST"])
 def predict_intent():
     req = request.json
     months = req.get("month", 2)

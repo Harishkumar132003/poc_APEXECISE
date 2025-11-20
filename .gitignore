@@ -66,7 +66,7 @@ logs/
 Thumbs.db
 
 # Generated files
-*.csv
+# *.csv
 *.xlsx
 *.pdf
 *.tmp
