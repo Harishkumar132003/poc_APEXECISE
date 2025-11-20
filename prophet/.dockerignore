@@ -1,0 +1,46 @@
+# Ignore Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pkl
+
+# Ignore virtual environments
+venv/
+env/
+.venv/
+
+# Ignore system files
+.DS_Store
+Thumbs.db
+
+# Ignore Git files
+.git/
+.gitignore
+
+# Ignore logs
+*.log
+
+# Ignore development artifacts
+*.sqlite3
+*.db
+
+# Docker build leftovers
+*.tar
+*.zip
+
+# Node modules (if frontend mixed)
+node_modules/
+
+# Don’t include data if not needed
+# (Optional: comment out if you need these inside container)
+data/raw/
+data/temp/
+
+# IDE folders
+.vscode/
+.idea/
+
+# Compiled Stan models (Prophet)
+cmdstan-*
+stan-*

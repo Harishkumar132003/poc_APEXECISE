@@ -1,0 +1,10 @@
+flask
+pandas
+prophet
+cmdstanpy
+numpy
+python-dateutil
+pytz
+matplotlib
+flask-cors==4.0.0
+
