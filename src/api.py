@@ -22,34 +22,42 @@ client = OpenAI()
 
 raw_engine = create_engine(
     f"mysql+mysqlconnector://{os.getenv('DB_USER')}:{os.getenv('DB_PASSWORD')}@{os.getenv('DB_HOST')}:3306/{os.getenv('DB_NAME')}",
-    pool_pre_ping=True
+    pool_pre_ping=True,
 )
+
 
 def save_chat(usercode, role, message=None, response=None, audio_blob=None):
     try:
-        query = text("""
+        query = text(
+            """
             INSERT INTO chat_history (usercode, role, message, audio, response)
             VALUES (:usercode, :role, :message, :audio, :response)
-        """)
+        """
+        )
         with raw_engine.begin() as conn:
-            conn.execute(query, {
-                "usercode": usercode,
-                "role": role,
-                "message": message,
-                "audio": audio_blob,
-                "response": response
-            })
+            conn.execute(
+                query,
+                {
+                    "usercode": usercode,
+                    "role": role,
+                    "message": message,
+                    "audio": audio_blob,
+                    "response": response,
+                },
+            )
     except Exception as e:
         print("Chat save error:", e)
 
 
 def get_chat_by_usercode(usercode):
-    query = text("""
+    query = text(
+        """
         SELECT role, message, audio, response, created_at
         FROM chat_history
         WHERE usercode = :usercode
         ORDER BY id ASC
-    """)
+    """
+    )
 
     with raw_engine.begin() as conn:
         rows = conn.execute(query, {"usercode": usercode}).mappings().all()
@@ -58,7 +66,8 @@ def get_chat_by_usercode(usercode):
     for r in rows:
         audio_base64 = (
             f"data:audio/webm;base64,{base64.b64encode(r['audio']).decode()}"
-            if r["audio"] else None
+            if r["audio"]
+            else None
         )
         parsed_response = None
         try:
@@ -66,13 +75,15 @@ def get_chat_by_usercode(usercode):
         except:
             parsed_response = r["response"]
 
-        result.append({
-            "role": r["role"],
-            "message": r["message"],
-            "response": parsed_response,
-            "created_at": r["created_at"].isoformat(),
-            "audio": audio_base64
-        })
+        result.append(
+            {
+                "role": r["role"],
+                "message": r["message"],
+                "response": parsed_response,
+                "created_at": r["created_at"].isoformat(),
+                "audio": audio_base64,
+            }
+        )
 
     return result
 
@@ -80,13 +91,10 @@ def get_chat_by_usercode(usercode):
 def init_database():
     db_uri = f"mysql+mysqlconnector://{os.getenv('DB_USER')}:{os.getenv('DB_PASSWORD')}@{os.getenv('DB_HOST')}:3306/{os.getenv('DB_NAME')}"
 
-    engine_args = {
-        "pool_pre_ping": True,
-        "pool_size": 20,
-        "max_overflow": 40
-    }
+    engine_args = {"pool_pre_ping": True, "pool_size": 20, "max_overflow": 40}
 
     return SQLDatabase.from_uri(db_uri, engine_args=engine_args)
+
 
 db = init_database()
 
@@ -168,12 +176,24 @@ llm_chart = ChatOpenAI(model="gpt-4.1-mini", temperature=0)
 # HELPERS
 # ---------------------------------------------------------------
 
+
 def clean_sql(q):
     return q.replace("```sql", "").replace("```", "").strip()
 
+
 def wants_chart(user_query: str):
-    chart_keywords = ["chart", "graph", "plot", "visualize", "trend", "bar", "line", "pie"]
+    chart_keywords = [
+        "chart",
+        "graph",
+        "plot",
+        "visualize",
+        "trend",
+        "bar",
+        "line",
+        "pie",
+    ]
     return any(k in user_query.lower() for k in chart_keywords)
+
 
 def generate_chart_json(sql_results, question):
     """
@@ -244,7 +264,11 @@ SQL Result:
         parsed = json.loads(cleaned)
 
         # Basic validation
-        if "chart_type" not in parsed or "labels" not in parsed or "title" not in parsed:
+        if (
+            "chart_type" not in parsed
+            or "labels" not in parsed
+            or "title" not in parsed
+        ):
             raise ValueError("Missing required chart keys")
 
         # Normalize structure
@@ -259,24 +283,25 @@ SQL Result:
             chart_obj["values"] = parsed.get("values", [])
             chart_obj["colors"] = parsed.get("colors", [])
 
-
         return chart_obj
 
     except Exception as e:
         # Fallback: treat as a normal text response instead of broken chart
         return {
             "type": "text",
-            "response": "I could not generate a valid chart for this query, but I can still answer in text if you ask again without requesting a chart."
+            "response": "I could not generate a valid chart for this query, but I can still answer in text if you ask again without requesting a chart.",
         }
+
 
 # ---------------------------------------------------------------
 # MAIN PROCESSING PIPELINE
 # ---------------------------------------------------------------
 
+
 def generate_sql(user_question: str, usercode: str, role: str):
-    system_prompt = SYSTEM_SQL_ANALYST \
-        .replace("<USERCODE>", usercode) \
-        .replace("<ROLE>", role)
+    system_prompt = SYSTEM_SQL_ANALYST.replace("<USERCODE>", usercode).replace(
+        "<ROLE>", role
+    )
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -285,6 +310,7 @@ def generate_sql(user_question: str, usercode: str, role: str):
 
     sql = llm_sql.invoke(messages).content
     return clean_sql(sql)
+
 
 def generate_final_answer(question, sql_query, sql_results, chat_history):
     messages = [
@@ -295,10 +321,11 @@ def generate_final_answer(question, sql_query, sql_results, chat_history):
             "content": f"""
 User Question: {question}
 SQL Result: {sql_results}
-"""
+""",
         },
     ]
     return llm_answer.invoke(messages).content
+
 
 def process_query(user_query, usercode, role, chat_history):
 
@@ -307,30 +334,19 @@ def process_query(user_query, usercode, role, chat_history):
     try:
         sql_result = db.run(sql)
     except Exception as e:
-        return {
-            "type": "text",
-            "response": f"SQL Error: {e}\nGenerated SQL: {sql}"
-        }
+        return {"type": "text", "response": f"SQL Error: {e}\nGenerated SQL: {sql}"}
 
     # If user wants chart
     if wants_chart(user_query):
         chart_json = generate_chart_json(sql_result, user_query)
         # If chart_json failed, it returns type="text"
-        return {
-            "type": "chart",
-            **chart_json
-        }
+        return {"type": "chart", **chart_json}
 
     # Otherwise return text
     history_slice = chat_history[-2:]
-    text_answer = generate_final_answer(
-        user_query, sql, sql_result, history_slice
-    )
+    text_answer = generate_final_answer(user_query, sql, sql_result, history_slice)
 
-    return {
-        "type": "text",
-        "response": text_answer
-    }
+    return {"type": "text", "response": text_answer}
 
 
 # ---------------------------------------------------------------
@@ -338,6 +354,7 @@ def process_query(user_query, usercode, role, chat_history):
 # ---------------------------------------------------------------
 
 chat_history = [AIMessage(content="Hello! I'm your SQL assistant. Ask me anything.")]
+
 
 @app.post("/analyze")
 def analyze():
@@ -368,10 +385,7 @@ def analyze():
     # Store FULL JSON in DB so frontend can reconstruct chart/text
     try:
         save_chat(
-            usercode,
-            "assistant",
-            message=user_query,
-            response=json.dumps(result)
+            usercode, "assistant", message=user_query, response=json.dumps(result)
         )
     except Exception as e:
         print("Error saving chat:", e)
@@ -406,9 +420,7 @@ def voice_input():
         # Whisper transcription
         with open(audio_path, "rb") as f:
             transcript = client.audio.transcriptions.create(
-                model="gpt-4o-transcribe",
-                file=f,
-                language="en"
+                model="gpt-4o-transcribe", file=f, language="en"
             )
 
         transcribed_text = transcript.text.strip()
@@ -431,7 +443,7 @@ def voice_input():
             role="assistant",
             message=transcribed_text,
             response=json.dumps(reply),
-            audio_blob=audio_bytes
+            audio_blob=audio_bytes,
         )
 
         return jsonify({"voice_text": transcribed_text, "response": reply})
@@ -450,18 +462,15 @@ def tts():
             return jsonify({"error": "text is required"}), 400
 
         response = client.audio.speech.create(
-            model="gpt-4o-mini-tts",
-            voice="alloy",
-            input=text
+            model="gpt-4o-mini-tts", voice="alloy", input=text
         )
 
         audio_bytes = response.read()
         audio_base64 = base64.b64encode(audio_bytes).decode("utf-8")
 
-        return jsonify({
-            "audio": f"data:audio/mp3;base64,{audio_base64}",
-            "format": "mp3"
-        })
+        return jsonify(
+            {"audio": f"data:audio/mp3;base64,{audio_base64}", "format": "mp3"}
+        )
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
