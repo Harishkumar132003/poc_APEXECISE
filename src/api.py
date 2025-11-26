@@ -10,6 +10,33 @@ from openai import OpenAI
 import tempfile
 import base64
 import json
+from pydantic import BaseModel, Field
+from typing import List, Optional
+
+class SQLModel(BaseModel):
+    sql: str = Field(description="Generated SQL query")
+    isChartNeeded: bool = Field(description="Whether user wants a chart")
+
+class ChartDataset(BaseModel):
+    label: str
+    data: List[float]
+    color: str
+
+class ChartResponse(BaseModel):
+    chart_type: str
+    labels: List[str]
+    values: Optional[List[float]] = None
+    datasets: Optional[List[ChartDataset]] = None
+    colors: Optional[List[str]] = None
+    title: str
+    hole: Optional[float] = None
+    options: Optional[dict] = None
+    x_axis_label: Optional[str] = None
+    y_axis_label: Optional[str] = None
+    legend_position: Optional[str] = None 
+    z: Optional[List[List[float]]] = None
+    x: Optional[List[str]] = None
+    y: Optional[List[str]] = None
 
 load_dotenv()
 app = Flask(__name__)
@@ -154,6 +181,16 @@ SQL RULES:
 - Output ONLY raw SQL.
 - No markdown.
 - No explanation.
+
+CHART DETECTION RULES:
+- Detect whether the user wants a chart using keywords:
+  ["chart", "graph", "plot", "visualize", "trend", "bar", "line", "pie", "histogram"]
+- Set `isChartNeeded` = true if any keyword is detected.
+- Otherwise set `isChartNeeded` = false.
+
+You MUST output structured fields only:
+- "sql": final SQL query
+- "isChartNeeded": boolean
 """
 
 SYSTEM_DATA_ANALYST = """
@@ -169,8 +206,10 @@ Rules:
 # ---------------------------------------------------------------
 
 llm_sql = ChatOpenAI(model="gpt-4.1", temperature=0)
+llm_sql_structured = llm_sql.with_structured_output(SQLModel , method="function_calling")
 llm_answer = ChatOpenAI(model="gpt-4.1-mini", temperature=0)
 llm_chart = ChatOpenAI(model="gpt-4.1-mini", temperature=0)
+llm_chart_structured = llm_chart.with_structured_output(ChartResponse, method="function_calling")
 
 # ---------------------------------------------------------------
 # HELPERS
@@ -191,52 +230,39 @@ def wants_chart(user_query: str):
         "bar",
         "line",
         "pie",
+        "histogram"
     ]
     return any(k in user_query.lower() for k in chart_keywords)
 
 
 def generate_chart_json(sql_results, question):
-    """
-    Ask the LLM for a chart spec and return a CLEAN dict.
-
-    On success: returns only chart fields:
-        { "chart_type", "labels", "values"/"datasets", "title" }
-
-    On failure: returns a TEXT-style object:
-        { "type": "text", "response": "..." }
-
-    So process_query can safely do:
-        { "type": "chart", **chart_json }
-        and let chart_json override to text if it failed.
-    """
     prompt = f"""
-Convert SQL result into a chart-ready JSON.
+Convert SQL result into a valid JSON chart specification.
 
-User question: "{question}"
+Supported chart types:
+- bar
+- line
+- pie
+- donut (chart_type='pie' + hole=0.5)
+- radar
+- heatmap
 
-Rules:
-- STRICT JSON only.
-- NO markdown.
-- NO backticks.
-- Use DOUBLE QUOTES everywhere.
-- Chart must ALWAYS include colors.
-
-Chart format for single-series:
+Single-Series Format:
 {{
-  "chart_type": "pie" | "bar" | "line",
+  "chart_type": "bar" | "line" | "pie" | "radar",
   "labels": [...],
   "values": [...],
-  "colors": ["#RRGGBB", "#RRGGBB", ...],
+  "colors": [...],
   "title": "..."
 }}
 
-Chart format for multi-series:
+Multi-Series Format:
 {{
   "chart_type": "bar" | "line",
   "labels": [...],
   "datasets": [
     {{
-      "label": "Series name",
+      "label": "series",
       "data": [...],
       "color": "#RRGGBB"
     }}
@@ -244,52 +270,70 @@ Chart format for multi-series:
   "title": "..."
 }}
 
-Color Rules:
-- Use bright modern colors.
-- Do not repeat colors in the same chart.
-- Use hex format (e.g., "#3b82f6").
+Donut Format:
+{{
+  "chart_type": "pie",
+  "labels": [...],
+  "values": [...],
+  "colors": [...],
+  "hole": 0.5,
+  "title": "..."
+}}
+
+Radar Format:
+{{
+  "chart_type": "radar",
+  "labels": [...],
+  "values": [...],
+  "colors": [...],
+  "title": "..."
+}}
+
+Heatmap Format:
+{{
+  "chart_type": "heatmap",
+  "x": [...],
+  "y": [...],
+  "z": [...],
+  "title": "..."
+}}
+
+Rules:
+- Output ONLY valid JSON.
+- Colors must be bright hex colors.
+- Match SQL data structure exactly.
+- For heatmap: pivot SQL into (x=months, y=package_size, z=matrix).
+- Missing combinations = 0.
+- No markdown. No comments.
+
+Insufficient Data Rules:
+- If the SQL result does NOT have enough distinct values to build the requested chart:
+    • bar/line: require ≥ 2 points
+    • radar: require ≥ 3 points
+    • heatmap: require ≥ 2 distinct months AND ≥ 2 distinct package sizes
+  THEN return this (TEXT) response instead of a chart:
+  {{
+    "type": "text",
+    "response": "Heatmap cannot be generated because the dataset is insufficient."
+  }}
 
 SQL Result:
 {sql_results}
+
+User Question:
+{question}
 """
 
-    raw = llm_chart.invoke(prompt).content
 
-    # Strip code fences if model still adds them
-    cleaned = raw.strip()
-    if cleaned.startswith("```"):
-        cleaned = cleaned.replace("```json", "").replace("```", "").strip()
+
 
     try:
-        parsed = json.loads(cleaned)
-
-        # Basic validation
-        if (
-            "chart_type" not in parsed
-            or "labels" not in parsed
-            or "title" not in parsed
-        ):
-            raise ValueError("Missing required chart keys")
-
-        # Normalize structure
-        chart_obj = {
-            "chart_type": parsed["chart_type"],
-            "labels": parsed["labels"],
-            "title": parsed["title"],
-        }
-        if "datasets" in parsed:
-            chart_obj["datasets"] = parsed["datasets"]
-        else:
-            chart_obj["values"] = parsed.get("values", [])
-            chart_obj["colors"] = parsed.get("colors", [])
-
-        return chart_obj
-
-    except Exception as e:
-        # Fallback: treat as a normal text response instead of broken chart
+        result: ChartResponse = llm_chart_structured.invoke(prompt)
+        return result.dict()
+    except Exception:
         return {
             "type": "text",
-            "response": "I could not generate a valid chart for this query, but I can still answer in text if you ask again without requesting a chart.",
+            "response": "Failed to generate chart JSON. Try again."
         }
 
 
@@ -308,8 +352,11 @@ def generate_sql(user_question: str, usercode: str, role: str):
         {"role": "user", "content": user_question},
     ]
 
-    sql = llm_sql.invoke(messages).content
-    return clean_sql(sql)
+    response: SQLModel = llm_sql_structured.invoke(messages)
+    return {
+            "sql": clean_sql(response.sql),
+            "isChartNeeded": response.isChartNeeded
+        }
 
 
 def generate_final_answer(question, sql_query, sql_results, chat_history):
@@ -329,24 +376,40 @@ SQL Result: {sql_results}
 
 def process_query(user_query, usercode, role, chat_history):
 
-    sql = generate_sql(user_query, usercode, role)
+    # 1️⃣ Structured SQL output → { sql, isChartNeeded }
+    sql_obj = generate_sql(user_query, usercode, role)
+    sql_query = sql_obj["sql"]
+    is_chart_needed = sql_obj["isChartNeeded"]
 
+    # 2️⃣ Run SQL safely
     try:
-        sql_result = db.run(sql)
+        sql_result = db.run(sql_query)
+        print("Executed SQL:", sql_query)
     except Exception as e:
-        return {"type": "text", "response": f"SQL Error: {e}\nGenerated SQL: {sql}"}
+        return {
+            "type": "text",
+            "response": f"SQL Error: {e}\nGenerated SQL: {sql_query}"
+        }
 
-    # If user wants chart
-    if wants_chart(user_query):
+    # 3️⃣ If user needs a chart
+    print("sql_result", sql_result)
+    if is_chart_needed:
         chart_json = generate_chart_json(sql_result, user_query)
-        # If chart_json failed, it returns type="text"
+
+        # If chart generation fails, it returns a text fallback
+        if chart_json.get("type") == "text":
+            return chart_json
+
         return {"type": "chart", **chart_json}
 
-    # Otherwise return text
+    # 4️⃣ Otherwise → Natural language answer
     history_slice = chat_history[-2:]
-    text_answer = generate_final_answer(user_query, sql, sql_result, history_slice)
+    text_answer = generate_final_answer(
+        user_query, sql_query, sql_result, history_slice
+    )
 
     return {"type": "text", "response": text_answer}
+
 
 
 # ---------------------------------------------------------------
