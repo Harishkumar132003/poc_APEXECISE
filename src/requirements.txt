@@ -8,10 +8,10 @@ openai
 mysql-connector-python==8.3.0
 
 # --- LangChain Stack ---
-langchain==0.1.8
-langchain-community==0.0.21
-langchain-core==0.1.24
-langchain-openai==0.0.6
-langchain-groq==0.0.1
+langchain
+langchain-community
+langchain-core
+langchain-openai
+langchain-groq
 
 # --- Optional (only needed if using frontend)
